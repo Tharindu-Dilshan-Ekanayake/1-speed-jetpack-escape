@@ -536,7 +536,7 @@ export function createProp(prop) {
       const disc = new Mesh(new PlaneGeometry(10, 10), new MeshBasicMaterial({ color: '#ffe14d', transparent: true, opacity: 0.18, depthWrite: false }))
       disc.rotation.x = -Math.PI / 2
       disc.position.y = 0.3
-      const pack = createJetpack('jp1', prop.skin)
+      const pack = createJetpack('jp1', prop.skin, { shadow: false })
       pack.scale.setScalar(2.2)
       pack.position.y = 6
       root.add(ring, disc, pack)

@@ -229,7 +229,8 @@ const _v = new Vector3()
 
 class Popup {
   constructor() {
-    this.canvas = makeCanvas(512, 160)
+    // Small popups: a 384 px canvas is plenty and uploads faster.
+    this.canvas = makeCanvas(384, 120)
     this.texture = new CanvasTexture(this.canvas)
     this.texture.colorSpace = SRGBColorSpace
     this.sprite = new Sprite(new SpriteMaterial({ map: this.texture, transparent: true, depthTest: false, depthWrite: false }))
@@ -263,6 +264,10 @@ export class Effects {
     for (const p of this.popups) this.group.add(p.sprite)
     /** sessionId -> { last: Vector3, hue, acc } */
     this.trails = new Map()
+    // Never shown: lets the shader warm-up compile the ring shader before the first burst.
+    const proto = new Mesh(new RingGeometry(0.8, 1, 8), new MeshBasicMaterial({ transparent: true, blending: AdditiveBlending, depthWrite: false, side: DoubleSide }))
+    proto.visible = false
+    this.group.add(proto)
   }
 
   /* ---- bursts ---------------------------------------------------------- */

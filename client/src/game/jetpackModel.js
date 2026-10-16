@@ -6,12 +6,15 @@ import {
   CylinderGeometry,
   DoubleSide,
   Group,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  Object3D,
   SphereGeometry,
 } from 'three'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 
 import { JETPACK_BY_ID, SKIN_BY_ID } from '../../../shared/config.js'
 import { makeCanvas, toTexture } from './canvasArt.js'
@@ -27,6 +30,54 @@ const PLATE = new BoxGeometry(1.7, 1.3, 0.3)
 const NOZZLE = new CylinderGeometry(0.27, 0.38, 0.42, 14)
 const FLAME = new ConeGeometry(0.34, 1.7, 14, 1, true).rotateX(Math.PI).translate(0, -0.85, 0)
 const CORE = new ConeGeometry(0.17, 1.0, 10, 1, true).rotateX(Math.PI).translate(0, -0.5, 0)
+
+/*
+ * Every jetpack has the same shape, so the static parts are baked once into
+ * one geometry per material and shared: a jetpack is 3 draw calls (plus its
+ * flames while flying) instead of 9 - or 21 with wings / spikes.
+ */
+const _o = new Object3D()
+const _m = new Matrix4()
+function placed(geo, [x, y, z], [rx, ry, rz] = [0, 0, 0], [sx, sy, sz] = [1, 1, 1], parent = null) {
+  _o.position.set(x, y, z)
+  _o.rotation.set(rx, ry, rz)
+  _o.scale.set(sx, sy, sz)
+  _o.updateMatrix()
+  _m.copy(_o.matrix)
+  if (parent) _m.premultiply(parent)
+  const g = geo.clone().applyMatrix4(_m)
+  g.clearGroups()
+  return g
+}
+const matrixOf = ([x, y, z], [sx, sy, sz] = [1, 1, 1]) => {
+  _o.position.set(x, y, z)
+  _o.rotation.set(0, 0, 0)
+  _o.scale.set(sx, sy, sz)
+  _o.updateMatrix()
+  return _o.matrix.clone()
+}
+const SIDES = [-1, 1]
+const TANKS = mergeGeometries(SIDES.map((side) => placed(TANK, [side * 0.55, 0, 0])))
+const BANDS = mergeGeometries(SIDES.flatMap((side) => [0.55, -0.4].map((y) => placed(BAND, [side * 0.55, y, 0]))))
+const DARK = mergeGeometries([placed(PLATE, [0, 0.1, 0.38]), ...SIDES.map((side) => placed(NOZZLE, [side * 0.55, -1.22, 0]))])
+
+const FEATHER = new SphereGeometry(1, 12, 8)
+/** Both angel wings (the left one mirrored), four feathers each. */
+const WINGS = mergeGeometries(
+  [matrixOf([0.6, 0.5, 0.2]), matrixOf([-0.6, 0.5, 0.2], [-1, 1, 1])].flatMap((wingMatrix) =>
+    [0, 1, 2, 3].map((i) => placed(FEATHER, [1.0 + i * 0.12, 0.55 - i * 0.42, 0], [0, 0, 0.35 - i * 0.22], [1.5 - i * 0.22, 0.32, 0.08], wingMatrix)),
+  ),
+)
+/** The spike burst, split by its two alternating colours. */
+const SPIKES = [0, 1].map((odd) => {
+  const burst = matrixOf([0, 0.2, -0.35])
+  const parts = []
+  for (let i = odd; i < 12; i += 2) {
+    const a = (i / 12) * Math.PI * 2
+    parts.push(placed(new ConeGeometry(0.22, 1.9 + (i % 3) * 0.5, 6), [Math.cos(a) * 1.2, Math.sin(a) * 1.2, -0.1], [0, 0, a - Math.PI / 2], [1, 1, 1], burst))
+  }
+  return mergeGeometries(parts)
+})
 
 const patternCache = new Map()
 
@@ -93,38 +144,13 @@ function patternTexture(skin) {
   return tex
 }
 
-function wing(color, glow) {
-  const g = new Group()
-  const mat = new MeshStandardMaterial({ color, emissive: glow, emissiveIntensity: 0.6, roughness: 0.4, side: DoubleSide })
-  for (let i = 0; i < 4; i += 1) {
-    const feather = new Mesh(new SphereGeometry(1, 12, 8), mat)
-    feather.scale.set(1.5 - i * 0.22, 0.32, 0.08)
-    feather.position.set(1.0 + i * 0.12, 0.55 - i * 0.42, 0)
-    feather.rotation.z = 0.35 - i * 0.22
-    g.add(feather)
-  }
-  return g
-}
-
-function spikes(colorA, colorB) {
-  const g = new Group()
-  for (let i = 0; i < 12; i += 1) {
-    const mat = new MeshBasicMaterial({ color: i % 2 ? colorA : colorB })
-    const spike = new Mesh(new ConeGeometry(0.22, 1.9 + (i % 3) * 0.5, 6), mat)
-    const a = (i / 12) * Math.PI * 2
-    spike.position.set(Math.cos(a) * 1.2, Math.sin(a) * 1.2, -0.1)
-    spike.rotation.z = a - Math.PI / 2
-    g.add(spike)
-  }
-  return g
-}
-
 /**
  * @param {string} jetpackId
  * @param {string} [skinId]
+ * @param {{ shadow?: boolean }} [opts] display copies (shop wall) skip the shadow
  * @returns {Group} with userData.setThrust(amount 0..1, time)
  */
-export function createJetpack(jetpackId, skinId) {
+export function createJetpack(jetpackId, skinId, { shadow = true } = {}) {
   const jp = JETPACK_BY_ID[jetpackId] || JETPACK_BY_ID.jp1
   const skin = skinId ? SKIN_BY_ID[skinId] : null
   const group = new Group()
@@ -145,25 +171,12 @@ export function createJetpack(jetpackId, skinId) {
     : new MeshStandardMaterial({ color: bandColor, roughness: 0.7 })
   const darkMat = new MeshStandardMaterial({ color: '#2a2d3a', roughness: 0.5, metalness: 0.6 })
 
-  const plate = new Mesh(PLATE, darkMat)
-  plate.position.set(0, 0.1, 0.38)
-  group.add(plate)
+  const tanks = new Mesh(TANKS, tankMat)
+  tanks.castShadow = shadow
+  group.add(tanks, new Mesh(BANDS, bandMat), new Mesh(DARK, darkMat))
 
   const flames = []
-  for (const side of [-1, 1]) {
-    const tank = new Mesh(TANK, tankMat)
-    tank.position.set(side * 0.55, 0, 0)
-    tank.castShadow = true
-    group.add(tank)
-    for (const y of [0.55, -0.4]) {
-      const band = new Mesh(BAND, bandMat)
-      band.position.set(side * 0.55, y, 0)
-      group.add(band)
-    }
-    const nozzle = new Mesh(NOZZLE, darkMat)
-    nozzle.position.set(side * 0.55, -1.22, 0)
-    group.add(nozzle)
-
+  for (const side of SIDES) {
     const flameMat = new MeshBasicMaterial({ color: jp.flame, transparent: true, opacity: 0.9, blending: AdditiveBlending, depthWrite: false })
     const coreMat = new MeshBasicMaterial({ color: '#ffffff', transparent: true, opacity: 0.95, blending: AdditiveBlending, depthWrite: false })
     const flame = new Group()
@@ -176,16 +189,10 @@ export function createJetpack(jetpackId, skinId) {
   }
 
   if (skin?.wings === 'angel') {
-    const right = wing('#ffffff', '#6fe7ff')
-    const left = wing('#ffffff', '#6fe7ff')
-    left.scale.x = -1
-    right.position.set(0.6, 0.5, 0.2)
-    left.position.set(-0.6, 0.5, 0.2)
-    group.add(right, left)
+    group.add(new Mesh(WINGS, new MeshStandardMaterial({ color: '#ffffff', emissive: '#6fe7ff', emissiveIntensity: 0.6, roughness: 0.4, side: DoubleSide })))
   } else if (skin?.wings === 'spikes') {
-    const burst = spikes(skin.colors[1], skin.colors[2])
-    burst.position.set(0, 0.2, -0.35)
-    group.add(burst)
+    // Even spikes wear colour 3, odd ones colour 2 (as before).
+    group.add(new Mesh(SPIKES[0], new MeshBasicMaterial({ color: skin.colors[2] })), new Mesh(SPIKES[1], new MeshBasicMaterial({ color: skin.colors[1] })))
   }
 
   let thrust = 0
