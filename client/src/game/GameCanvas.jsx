@@ -1,7 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { Bloom, EffectComposer, ToneMapping, Vignette } from '@react-three/postprocessing'
 import { ToneMappingMode } from 'postprocessing'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NeutralToneMapping } from 'three'
 
 import { progressAt } from '../../../shared/world.js'
@@ -229,9 +229,57 @@ function AdaptiveQuality({ maxDpr }) {
 }
 
 /**
+ * Compiles every shader while the player is still joining - all rooms and
+ * hidden effects shown for that one call - so the first visit to a stage, the
+ * first jetpack flame or level-up burst never freezes a frame. Runs again
+ * after a graphics change (lights / shadows change every shader).
+ */
+function ShaderWarmup({ quality }) {
+  const gl = useThree((s) => s.gl)
+  const scene = useThree((s) => s.scene)
+  const camera = useThree((s) => s.camera)
+  const lowPower = useGame((s) => s.lowPower)
+  const first = useRef(true)
+  useEffect(() => {
+    /** Compiles the visible scene plus `reveal` (hidden parts shown for this one call). */
+    const compileWith = (reveal) => {
+      const shown = []
+      for (const root of reveal) {
+        root.traverse((o) => {
+          if (!o.visible) {
+            shown.push(o)
+            o.visible = true
+          }
+        })
+      }
+      try {
+        gl.compileAsync(scene, camera)?.catch(() => {})
+      } catch (err) {
+        console.warn('[gfx] shader warm-up failed:', err?.message || err)
+      }
+      // compileAsync gathers everything synchronously; visibility can go back now.
+      for (const o of shown) o.visible = false
+    }
+    const timers = []
+    if (first.current) {
+      // Startup: everything at once, while the player is still joining.
+      first.current = false
+      timers.push(setTimeout(() => compileWith([scene]), 400))
+    } else {
+      // After a graphics change mid-game: one room per second, so no frame stalls for long.
+      const rooms = runtime.worldView?.rooms || []
+      rooms.forEach((room, i) => timers.push(setTimeout(() => !room.visible && compileWith([room]), 1000 * (i + 1))))
+      if (runtime.effects) timers.push(setTimeout(() => compileWith([runtime.effects.group]), 1000 * (rooms.length + 1)))
+    }
+    return () => timers.forEach(clearTimeout)
+  }, [gl, scene, camera, quality, lowPower])
+  return null
+}
+
+/**
  * Sharpest render resolution per setting. Every setting is at least native
- * (1x) - Low saves its time elsewhere (no glow pass, fewer lights, smaller
- * shadow map). Capped because 2x on a 4K screen costs 4x for little gain.
+ * (1x) - Low and Medium save their time elsewhere (no glow pass, fewer
+ * lights, smaller shadow map). Capped because 2x on a 4K screen costs 4x for little gain.
  */
 function maxDprFor(quality) {
   const screen = window.devicePixelRatio || 1
@@ -250,7 +298,7 @@ export function GameCanvas({ identity, onReady }) {
   return (
     <Canvas
       className="game-canvas"
-      shadows
+      shadows="percentage"
       dpr={dpr}
       camera={{ fov: 70, near: 0.5, far: 2400, position: [0, 12, 60] }}
       // Antialiasing always on: the GL context is made once and settings can change mid-game.
@@ -265,7 +313,9 @@ export function GameCanvas({ identity, onReady }) {
       <GameLoop />
       <AudioVolumes />
       <AdaptiveQuality maxDpr={maxDpr} />
-      {quality !== 'low' && <PostFX />}
+      <ShaderWarmup quality={quality} />
+      {/* Glow is a full-screen pass: High only. */}
+      {quality === 'high' && <PostFX />}
     </Canvas>
   )
 }

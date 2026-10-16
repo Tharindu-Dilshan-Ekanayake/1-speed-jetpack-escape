@@ -290,8 +290,12 @@ export class WorldView {
 
     this.hunters = new GhostsView(W.ghostSpawns)
     this.root.add(this.hunters.group)
+    // Each hunting ghost lives in its stage's room (it never leaves the hall).
+    for (const g of this.hunters.ghosts) this.place(g.root)
     this.crusherViews = createCrushers(W.crushers)
     this.root.add(this.crusherViews.group)
+    // Crusher walls belong to their stage's room too.
+    for (const side of [...this.crusherViews.group.children]) this.place(side)
 
     const beacons = createBeacons(W.beacons)
     if (beacons) {
@@ -323,7 +327,7 @@ export class WorldView {
     })
     // Jetpacks on pedestals.
     this.pedestals = W.pedestals.map((p, i) => {
-      const pack = createJetpack(p.id)
+      const pack = createJetpack(p.id, '', { shadow: false })
       pack.scale.setScalar(2.2)
       pack.position.set(p.pos[0], p.pos[1] + 3.4, p.pos[2])
       pack.rotation.y = -Math.PI / 2

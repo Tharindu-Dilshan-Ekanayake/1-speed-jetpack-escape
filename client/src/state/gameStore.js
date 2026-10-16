@@ -25,12 +25,46 @@ export const DEFAULT_SETTINGS = {
   autoPerf: true,
 }
 
-function loadSettings() {
+/**
+ * First visit: pick the graphics setting from the hardware, so a weak laptop
+ * starts smooth instead of starting slow and adapting.
+ */
+function detectQuality() {
   try {
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') }
+    const canvas = document.createElement('canvas')
+    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl')
+    if (!gl) return 'low'
+    const info = gl.getExtension('WEBGL_debug_renderer_info')
+    const gpu = String(info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)).toLowerCase()
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+    const memory = navigator.deviceMemory || 8
+    const cores = navigator.hardwareConcurrency || 4
+    const touch = window.matchMedia?.('(pointer: coarse)').matches
+    if (/swiftshader|llvmpipe|software|basic render|microsoft basic/.test(gpu) || memory <= 2 || cores <= 2) return 'low'
+    if (touch || memory <= 4 || /intel|uhd|iris|hd graphics|mali|adreno|powervr|apple gpu|vivante|videocore/.test(gpu)) return 'medium'
+    return 'high'
   } catch {
-    return { ...DEFAULT_SETTINGS }
+    return 'medium'
   }
+}
+
+function loadSettings() {
+  let saved = {}
+  try {
+    saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}')
+  } catch {
+    // storage unavailable - defaults below
+  }
+  const settings = { ...DEFAULT_SETTINGS, ...saved }
+  if (!saved.quality) {
+    settings.quality = detectQuality()
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
+    } catch {
+      // storage unavailable - it is detected again next time
+    }
+  }
+  return settings
 }
 
 let toastId = 1

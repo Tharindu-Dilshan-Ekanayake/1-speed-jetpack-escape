@@ -130,11 +130,21 @@ screens):
 | Setting | Glow (bloom) | Shadow map | Point lights | Max resolution |
 | --- | --- | --- | --- | --- |
 | Low | off | 1024 | 2 | 1× |
-| Medium | on | 1536 | 3 | 1.25× |
+| Medium | off | 1536 | 3 | 1.25× |
 | High | on | 2048 | 4 | 1.5× |
 
+- **First visit:** the setting is picked from the hardware. Software rendering
+  or very little memory gets Low; integrated GPUs, phones and tablets get
+  Medium; dedicated GPUs get High. Players can change it in Settings.
 - **Room culling:** only the room you are in and its neighbours are drawn (every
-  room is enclosed), so a stage costs about 20-30K triangles and 60-150 draw calls.
+  room is enclosed). A stage costs about 17-26K triangles and 55-70 draw calls;
+  the lobby about 170.
+- **Merged models:** each jetpack is 3 draw calls instead of 9-21, and the
+  display jetpacks cast no shadows.
+- **No compile stutters:** every shader is compiled while the player is joining,
+  so the first visit to a stage compiles nothing (measured: 0 new shaders over
+  stages 1-9). After a graphics change, rooms recompile one per second in the
+  background.
 - **Auto performance** (on by default): if frames drop, the game first lowers any
   above-native resolution, then switches to a light mode (no glow, no shadows)
   rather than blurring the picture. Turn it off in Settings to keep the full look.
