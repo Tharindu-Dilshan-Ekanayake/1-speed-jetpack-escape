@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { BloxityContext } from './BloxityContext'
+import { API_URL, PORTAL_URL } from './boxity'
 import { getSDK, safeCall, toUnsubscribe, waitForSDK } from './sdk'
 import { DEFAULT_PROPORTIONS, useBloxityStore } from './store'
 
@@ -44,9 +45,6 @@ function isResetSentinel(equipped) {
  * and login can never succeed. That fallback is meant for people running the whole
  * Bloxity portal locally; for game development it has to be overridden.
  */
-const PORTAL_URL = import.meta.env.VITE_BLOXITY_PORTAL_URL || 'https://bloxity.io'
-const API_URL = import.meta.env.VITE_BLOXITY_API_URL || 'https://api.bloxity.io'
-
 function initOnce(gameSlug, signal) {
   if (!initPromise) {
     initPromise = waitForSDK({ signal }).then((sdk) => {

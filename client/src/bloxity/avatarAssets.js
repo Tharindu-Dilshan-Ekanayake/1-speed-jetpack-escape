@@ -62,7 +62,44 @@ export const assetUrls = {
   hatTexture: (id) => `${AVATAR_CDN}/textures/hats/${id}.png`,
   backMesh: (id) => `${AVATAR_CDN}/items/back/${id}.obj`,
   backTexture: (id) => `${AVATAR_CDN}/textures/back/${id}.png`,
+  itemMesh: (dir, id) => `${AVATAR_CDN}/items/${dir}/${id}.obj`,
+  itemTexture: (dir, id) => `${AVATAR_CDN}/textures/${dir}/${id}.png`,
 }
 
 /** Skin ids fall back to "0" rather than being skipped. */
 export const skinIdOrDefault = (id) => (isRealId(id) ? String(id) : DEFAULT_SKIN_ID)
+
+/** Hats, hair and masks: all worn on the head bone, all from the hats folder. */
+export const HEAD_ITEM_KEYS = ['hatId', 'hairId', 'maskId']
+
+/**
+ * Body accessories. Single items hang off `bone`; hands and shoes are worn as
+ * a pair - the mesh on `bone` plus a mirrored copy on `mirrorBone`.
+ * Origins are in player.glb model space (Boxity's own values).
+ */
+export const ACCESSORY_SLOTS = [
+  { idKey: 'neckId', dir: 'neck', bone: 'Spine2', origin: [0, 4.8, 0] },
+  { idKey: 'chestId', dir: 'chest', bone: 'Spine2', origin: [0, 3.6, 0] },
+  { idKey: 'waistId', dir: 'waist', bone: 'Spine1', origin: [0, 2.4, 0] },
+  { idKey: 'handId', dir: 'hand', bone: 'ArmL2_leaf', mirrorBone: 'ArmR2_leaf', origin: [0, 0, 0] },
+  { idKey: 'shoesId', dir: 'shoes', bone: 'LegL2_leaf', mirrorBone: 'LegR2_leaf', origin: [0, 0, 0] },
+]
+
+/** Pants, shirt and face are painted into the skin texture by Boxity's API. */
+const CLOTHING = [
+  ['pantsId', 'pn'],
+  ['shirtId', 'sh'],
+  ['faceId', 'fc'],
+]
+const worn = (id) => isRealId(id) && String(id) !== '0'
+
+/**
+ * The body texture with the worn face, shirt and pants drawn on - the same
+ * URL Legion.SDK.avatar.getSkinTextureUrl() gives for the local player.
+ */
+export function skinTextureUrl(equipped = {}, apiUrl = 'https://api.bloxity.io') {
+  const segments = CLOTHING.filter(([key]) => worn(equipped[key])).map(([key, tag]) => `_${tag}${equipped[key]}`)
+  if (!segments.length) return assetUrls.skinTexture(skinIdOrDefault(equipped.skinId))
+  const skin = worn(equipped.skinId) ? equipped.skinId : '0'
+  return `${apiUrl}/v1/avatar/skin-texture/s${skin}${segments.join('')}.png`
+}

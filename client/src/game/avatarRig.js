@@ -1,4 +1,4 @@
-import { NearestFilter, Quaternion, Vector3 } from 'three'
+import { DoubleSide, Euler, Matrix4, NearestFilter, Quaternion, Vector3 } from 'three'
 
 import { BACK_BONE, HAT_BONE, NECK_OFFSET_BONE, PART_SLOTS } from '../bloxity/avatarAssets'
 
@@ -117,7 +117,96 @@ export function collectRig(root) {
     }
   }
 
+  // Rest transforms for accessory placement, captured before any pose or
+  // proportions touch the bones: restInverse = inverse(boneInModelSpace).
+  // (Not skeleton.boneInverses - the leaf bones' inverse binds are 90 degrees
+  // off their rest pose in player.glb.)
+  rig.nodes = new Map()
+  rig.restInverse = new Map()
+  rig.paired = []
+  root.updateMatrixWorld(true)
+  const rootInv = new Matrix4().copy(root.matrixWorld).invert()
+  root.traverse((node) => {
+    if (!node.isBone) return
+    rig.nodes.set(node.name, node)
+    rig.restInverse.set(node.name, new Matrix4().multiplyMatrices(rootInv, node.matrixWorld).invert())
+  })
+
   return rig
+}
+
+/**
+ * Attaches a body accessory (Boxity neck/chest/waist/hand/shoes slots).
+ * Single items become children of their bone with local = restInverse(bone) *
+ * translate(origin). Hands and shoes are a pair: the mesh on `bone` plus a
+ * copy mirrored across x on `mirrorBone`; those follow bone position and
+ * rotation but not scale, so they live under `container` and are placed every
+ * frame by updatePairedAccessories().
+ * @returns {import('three').Object3D[]} everything that was added
+ */
+export function attachBodyAccessory(rig, slot, object, container) {
+  const bone = rig.nodes?.get(slot.bone)
+  const inv = rig.restInverse?.get(slot.bone)
+  if (!object || !bone || !inv) return []
+  const origin = new Matrix4().makeTranslation(slot.origin[0], slot.origin[1], slot.origin[2])
+  object.traverse((child) => {
+    if (child.isMesh) child.castShadow = true
+  })
+
+  if (!slot.mirrorBone) {
+    object.matrixAutoUpdate = false
+    object.matrix.copy(inv).multiply(origin)
+    bone.add(object)
+    return [object]
+  }
+
+  const pieces = [{ obj: object, bone, local: inv.clone().multiply(origin) }]
+  const mirrorBone = rig.nodes.get(slot.mirrorBone)
+  const mirrorInv = rig.restInverse.get(slot.mirrorBone)
+  if (mirrorBone && mirrorInv) {
+    const mirror = object.clone(true)
+    // Mirroring flips triangle winding; draw both sides so it isn't inside out.
+    mirror.traverse((child) => {
+      if (child.isMesh && child.material) {
+        child.material = child.material.clone()
+        child.material.side = DoubleSide
+      }
+    })
+    pieces.push({ obj: mirror, bone: mirrorBone, local: mirrorInv.clone().multiply(new Matrix4().makeScale(-1, 1, 1)).multiply(origin) })
+  }
+  for (const p of pieces) {
+    p.obj.matrixAutoUpdate = false
+    container.add(p.obj)
+    rig.paired.push(p)
+  }
+  return pieces.map((p) => p.obj)
+}
+
+const _pairM = new Matrix4()
+const _pairInv = new Matrix4()
+const _pairP = new Vector3()
+const _pairQ = new Quaternion()
+const _pairS = new Vector3()
+const _one = new Vector3(1, 1, 1)
+
+/** Places paired accessories: compose(bone position, bone rotation, scale 1) * local. */
+export function updatePairedAccessories(rig, container) {
+  if (!rig?.paired?.length || !container) return
+  container.updateWorldMatrix(true, false)
+  _pairInv.copy(container.matrixWorld).invert()
+  for (const p of rig.paired) {
+    p.bone.updateWorldMatrix(true, false)
+    _pairM.multiplyMatrices(_pairInv, p.bone.matrixWorld).decompose(_pairP, _pairQ, _pairS)
+    p.obj.matrix.compose(_pairP, _pairQ, _one).multiply(p.local)
+    p.obj.matrixWorldNeedsUpdate = true
+  }
+}
+
+/** Forgets paired accessories that were removed (avatar rebuilt). */
+export function dropPairedAccessories(rig, objects) {
+  if (!rig?.paired) return
+  const gone = new Set(objects)
+  rig.paired = rig.paired.filter((p) => !gone.has(p.obj))
 }
 
 /** Bloxity textures are authored unflipped and pixel-art filtered. */
@@ -323,6 +412,92 @@ function rotateBone(rig, name, which, angle) {
 const swing = (rig, name, angle) => rotateBone(rig, name, 'axisX', angle)
 /** Sway a limb out to the side. */
 const sway = (rig, name, angle) => rotateBone(rig, name, 'axisZ', angle)
+
+const _emoteQ = new Quaternion()
+const _emoteTarget = new Quaternion()
+const _emoteEuler = new Euler()
+const DEG = Math.PI / 180
+
+/**
+ * Plays a Boxity emote clip on the standard rig. Tracks are degree deltas
+ * over the bind pose (euler XYZ, right-multiplied onto the bind quaternion),
+ * smoothstepped between keys, clamped outside them; looping clips wrap.
+ * Blended over whatever pose is already on the bones by `weight`.
+ */
+export function applyEmote(rig, clip, time, weight) {
+  if (!rig?.skeleton || !clip?.tracks || weight <= 0) return
+  const len = clip.len || 1
+  const t = clip.loop ? ((time % len) + len) % len : Math.min(time, len)
+  for (const [name, keys] of Object.entries(clip.tracks)) {
+    const entry = rig.bones[name]
+    if (!entry || !Array.isArray(keys) || !keys.length) continue
+    const last = keys[keys.length - 1]
+    let x = last[1]
+    let y = last[2]
+    let z = last[3]
+    if (t <= keys[0][0]) [, x, y, z] = keys[0]
+    else {
+      for (let i = 0; i < keys.length - 1; i += 1) {
+        const a = keys[i]
+        const b = keys[i + 1]
+        if (t >= a[0] && t < b[0]) {
+          let s = (t - a[0]) / Math.max(1e-6, b[0] - a[0])
+          s = s * s * (3 - 2 * s)
+          x = a[1] + (b[1] - a[1]) * s
+          y = a[2] + (b[2] - a[2]) * s
+          z = a[3] + (b[3] - a[3]) * s
+          break
+        }
+      }
+    }
+    _emoteQ.setFromEuler(_emoteEuler.set(x * DEG, y * DEG, z * DEG, 'XYZ'))
+    _emoteTarget.copy(entry.origQuat).multiply(_emoteQ)
+    entry.bone.quaternion.slerp(_emoteTarget, weight)
+  }
+}
+
+const _sideProbe = new Vector3()
+
+/**
+ * Which way "left" points in character space. Rigs disagree on whether ArmL is
+ * the character's left or the viewer's, so measure it once from the bind pose.
+ */
+function detectSideSign(rig) {
+  const arm = rig.bones.ArmL_Offset?.bone || rig.bones.ArmL1?.bone
+  if (!arm) return 1
+  rig.root.updateWorldMatrix(true, true)
+  arm.getWorldPosition(_sideProbe)
+  rig.root.worldToLocal(_sideProbe)
+  return _sideProbe.x >= 0 ? 1 : -1
+}
+
+/**
+ * Applies a pose from `pose.js` (shared with the blocky fallback avatar).
+ * Like animateRig, it must run right after applyProportions in the same frame.
+ *
+ * @param {object} rig from collectRig
+ * @param {object} pose from pose.js
+ * @param {number} unitsPerStud rig units per world stud (inverse of the fit scale)
+ */
+export function poseRig(rig, pose, unitsPerStud = 1) {
+  if (!rig?.skeleton || !pose) return
+  if (rig.sideSign === undefined) rig.sideSign = detectSideSign(rig)
+  const side = rig.sideSign
+
+  swing(rig, 'Spine1', pose.spine)
+  swing(rig, 'Neck1', pose.head - pose.spine * 0.4)
+  swing(rig, 'LegL1', pose.legL)
+  swing(rig, 'LegR1', pose.legR)
+  swing(rig, 'LegL2', pose.kneeL)
+  swing(rig, 'LegR2', pose.kneeR)
+  swing(rig, 'ArmL1', pose.armL)
+  swing(rig, 'ArmR1', pose.armR)
+  swing(rig, 'ArmL2', pose.elbowL)
+  swing(rig, 'ArmR2', pose.elbowR)
+  sway(rig, 'ArmL1', pose.armLOut * side)
+  sway(rig, 'ArmR1', -pose.armROut * side)
+  rig.root.position.y = rig.rootRestY + pose.bob * unitsPerStud
+}
 
 /**
  * Poses the rig for the current motion state.
