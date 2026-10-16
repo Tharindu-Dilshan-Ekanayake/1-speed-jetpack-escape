@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Color } from 'three'
 
+import { useGame } from '../state/gameStore.js'
 import { addSystem, runtime } from '../state/runtime.js'
 
 /** Real point lights placed at the nearest torches / lava glows. Each one costs every pixel. */
@@ -13,7 +14,10 @@ const LOBBY = runtime.world.zones.find((z) => z.kind === 'lobby')
  * glows are served from a small pool of point lights placed at the sources
  * nearest the player (hundreds of lights in the data, six real ones).
  */
-export function Lighting({ quality, shadows = quality !== 'low' }) {
+export function Lighting({ quality }) {
+  const lowPower = useGame((s) => s.lowPower)
+  // Shadows on every setting (they are most of the "depth"); only the light mode drops them.
+  const shadows = !lowPower
   const hemi = useRef(null)
   const sun = useRef(null)
   const fog = useRef(null)
@@ -88,7 +92,7 @@ export function Lighting({ quality, shadows = quality !== 'low' }) {
     })
   }, [])
 
-  const mapSize = quality === 'high' ? 2048 : 1024
+  const mapSize = quality === 'high' ? 2048 : quality === 'medium' ? 1536 : 1024
   const poolSize = POOL_SIZE[quality] || 3
   return (
     <>

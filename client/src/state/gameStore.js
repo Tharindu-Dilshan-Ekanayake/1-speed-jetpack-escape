@@ -21,6 +21,8 @@ export const DEFAULT_SETTINGS = {
   turnCamera: true,
   /** The sound on/off button. */
   muted: false,
+  /** Let the game trade glow/shadows for frame rate on slow PCs (never resolution). */
+  autoPerf: true,
 }
 
 function loadSettings() {
@@ -63,6 +65,8 @@ export const useGame = create((set, get) => ({
   hello: null,
   /** Set by AdaptiveQuality when even the lowest resolution is too slow: glow and shadows off. */
   lowPower: false,
+  /** Render resolution chosen by AdaptiveQuality (null = the setting's sharpest). */
+  renderDpr: null,
   crateResult: null,
   purchasePending: null,
   settings: loadSettings(),

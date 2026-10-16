@@ -125,6 +125,8 @@ function GameLoop() {
 
 /** Glow + vignette. 2x MSAA and a 6-level half-resolution bloom: the High look at a fraction of the cost. */
 function PostFX() {
+  const lowPower = useGame((s) => s.lowPower)
+  if (lowPower) return null
   return (
     <EffectComposer multisampling={2}>
       <Bloom mipmapBlur levels={6} resolutionScale={0.5} luminanceThreshold={0.8} luminanceSmoothing={0.25} intensity={0.7} />
@@ -143,23 +145,31 @@ function AudioVolumes() {
   return null
 }
 
-const MIN_DPR = 0.65
+/**
+ * The picture never gets blurrier than the screen itself: a lower render
+ * resolution is the drop people notice most, so it is the last thing to go.
+ */
+const minDpr = () => Math.min(1, window.devicePixelRatio || 1)
 
 /**
- * Keeps the frame rate up on any PC. When frames get slow the render
- * resolution steps down a little (to 65% at most) and comes back when there
- * is room again; bloom, shadows and lights stay on, so "High" still looks like
- * High on a low-end laptop. Only if it is still slow at the lowest
- * resolution does it switch to the lighter mode (no glow / shadows).
+ * Keeps the frame rate up on any PC. When frames get slow, a sharper-than-
+ * native resolution (high-DPI screens) steps down toward native; if it is
+ * still slow at native, the light mode switches off the glow pass and the
+ * shadows - cheap to lose, and the picture stays sharp.
  */
 function AdaptiveQuality({ maxDpr }) {
-  const setDpr = useThree((s) => s.setDpr)
   useEffect(() => {
+    const MIN_DPR = Math.min(maxDpr, minDpr())
     let dpr = maxDpr
     let frames = 0
     let since = performance.now()
     let calm = 0
+    let slow = 0
     let slowAtMin = 0
+    /** No sharpening again for a while after slowing down: avoids flip-flopping. */
+    let holdUntil = 0
+    // The Canvas renders at the store's value (it re-applies its dpr prop on every render).
+    const setDpr = (v) => useGame.setState({ renderDpr: v })
     setDpr(dpr)
     runtime.dpr = dpr
     return addSystem({
@@ -174,37 +184,58 @@ function AdaptiveQuality({ maxDpr }) {
         frames = 0
         since = now
         runtime.fps = fps
+        // Turned off in Settings: always the full look.
+        if (!getGame().settings.autoPerf) {
+          if (dpr !== maxDpr) setDpr((dpr = maxDpr))
+          if (getGame().lowPower) useGame.setState({ lowPower: false })
+          return
+        }
         // A hidden tab stops frames for a while: that is not slowness.
         if (document.hidden || span > 2500) return
-        if (fps < 50 && dpr > MIN_DPR) {
-          dpr = Math.max(MIN_DPR, Math.round((dpr - 0.1) * 100) / 100)
-          setDpr(dpr)
+        if (fps < 50) {
           calm = 0
-        } else if (fps < 40) {
-          slowAtMin += 1
-          if (slowAtMin >= 4 && !getGame().lowPower) useGame.setState({ lowPower: true })
+          slow += 1
+          if (dpr > MIN_DPR && slow >= 2) {
+            // Two slow seconds in a row: a bit less resolution.
+            dpr = Math.max(MIN_DPR, Math.round((dpr - 0.1) * 100) / 100)
+            setDpr(dpr)
+            slow = 0
+            holdUntil = now + 10000
+          } else if (dpr <= MIN_DPR && fps < 40) {
+            slowAtMin += 1
+            if (slowAtMin >= 4 && !getGame().lowPower) {
+              useGame.setState({ lowPower: true })
+              getGame().toast('Smooth mode on: glow and shadows off so the game stays fast. You can change this in Settings.', 'info', 7000)
+            }
+          }
         } else if (fps > 57) {
+          slow = 0
           slowAtMin = 0
           calm += 1
-          if (calm >= 3 && dpr < maxDpr) {
+          if (calm >= 5 && dpr < maxDpr && now > holdUntil) {
             dpr = Math.min(maxDpr, Math.round((dpr + 0.05) * 100) / 100)
             setDpr(dpr)
             calm = 0
           }
         } else {
+          slow = 0
           calm = 0
         }
         runtime.dpr = dpr
       },
     })
-  }, [maxDpr, setDpr])
+  }, [maxDpr])
   return null
 }
 
-/** Sharpest render resolution per setting (capped: 2x on a 4K screen costs 4x for little gain). */
+/**
+ * Sharpest render resolution per setting. Every setting is at least native
+ * (1x) - Low saves its time elsewhere (no glow pass, fewer lights, smaller
+ * shadow map). Capped because 2x on a 4K screen costs 4x for little gain.
+ */
 function maxDprFor(quality) {
   const screen = window.devicePixelRatio || 1
-  if (quality === 'low') return 0.75
+  if (quality === 'low') return Math.min(screen, 1)
   if (quality === 'medium') return Math.min(screen, 1.25)
   return Math.min(screen, 1.5)
 }
@@ -214,18 +245,19 @@ function maxDprFor(quality) {
  */
 export function GameCanvas({ identity, onReady }) {
   const quality = useGame((s) => s.settings.quality)
-  const lowPower = useGame((s) => s.lowPower)
   const maxDpr = maxDprFor(quality)
+  const dpr = Math.min(maxDpr, useGame((s) => s.renderDpr) ?? maxDpr)
   return (
     <Canvas
       className="game-canvas"
-      shadows={quality !== 'low'}
-      dpr={maxDpr}
+      shadows
+      dpr={dpr}
       camera={{ fov: 70, near: 0.5, far: 2400, position: [0, 12, 60] }}
-      gl={{ antialias: quality !== 'high', powerPreference: 'high-performance', toneMapping: NeutralToneMapping }}
+      // Antialiasing always on: the GL context is made once and settings can change mid-game.
+      gl={{ antialias: true, powerPreference: 'high-performance', toneMapping: NeutralToneMapping }}
     >
       <World />
-      <Lighting quality={quality} shadows={quality !== 'low' && !lowPower} />
+      <Lighting quality={quality} />
       <LocalPlayer identity={identity} onReady={onReady} />
       <RemotePlayers />
       <GuideArrow />
@@ -233,7 +265,7 @@ export function GameCanvas({ identity, onReady }) {
       <GameLoop />
       <AudioVolumes />
       <AdaptiveQuality maxDpr={maxDpr} />
-      {quality === 'high' && !lowPower && <PostFX />}
+      {quality !== 'low' && <PostFX />}
     </Canvas>
   )
 }

@@ -375,6 +375,10 @@ function SettingsPanel() {
         </div>
       </div>
       <div className="setting tx tx-sm">
+        Auto performance (keeps it smooth on slow PCs)
+        <Toggle value={s.autoPerf !== false} onChange={(v) => update({ autoPerf: v })} />
+      </div>
+      <div className="setting tx tx-sm">
         Camera sensitivity
         <input type="range" min={0.3} max={2.5} step={0.1} value={s.camSensitivity} onChange={(e) => update({ camSensitivity: Number(e.target.value) })} />
       </div>
