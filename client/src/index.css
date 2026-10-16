@@ -2,7 +2,7 @@
 
 :root {
   color-scheme: dark;
-  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Fredoka', system-ui, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -12,6 +12,7 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
+  background: #150f3b;
 }
 
 /* The R3F canvas fills its container; the HUD is absolutely positioned over it. */

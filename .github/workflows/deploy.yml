@@ -1,0 +1,123 @@
+# Ships +1 Speed Jetpack Escape to Boxity Legion hosting.
+#   push to dev  -> dev channel   (https://1-speed-jetpack-escape.dev.play.bloxity.io)
+#   push to main -> prod channel  (https://1-speed-jetpack-escape.play.bloxity.io)
+#
+# One repository secret is needed: LEGION_DEPLOY_TOKEN (Settings -> Secrets and
+# variables -> Actions). The image goes to this repo's own GitHub Container
+# Registry with the built-in GITHUB_TOKEN. After the FIRST run, make the
+# package public (repo -> Packages -> Package settings -> Change visibility)
+# so Legion can pull it.
+name: Deploy to Boxity
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+# Never cancel a rollout halfway; queue the next one instead.
+concurrency:
+  group: legion-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  GAME_ID: 1-speed-jetpack-escape
+  # Players per pod = the room's maxClients (server MAX_CLIENTS, client VITE_ROOM_SIZE).
+  SEAT_CAP: 8
+
+jobs:
+  backend:
+    name: Backend image -> Legion
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.meta.outputs.channel }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pick channel, version and image
+        id: meta
+        run: |
+          if [ "$GITHUB_REF_NAME" = "main" ]; then channel=prod; else channel=dev; fi
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          version=${GITHUB_SHA::12}
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/$owner/$GAME_ID-server:$channel-$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check the deploy token is set
+        env:
+          LEGION_DEPLOY_TOKEN: ${{ secrets.LEGION_DEPLOY_TOKEN }}
+        run: |
+          if [ -z "$LEGION_DEPLOY_TOKEN" ]; then
+            echo "::error::Add the LEGION_DEPLOY_TOKEN repository secret (Settings -> Secrets and variables -> Actions)."
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # The server imports ../shared, so the build context is the repo root.
+      - name: Build and push the server image
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+        run: |
+          docker build -f server/Dockerfile \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Roll it out on Legion
+        env:
+          LEGION_DEPLOY_TOKEN: ${{ secrets.LEGION_DEPLOY_TOKEN }}
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+        run: |
+          body=$(jq -n --arg channel "$CHANNEL" --arg image "$IMAGE" --arg version "$VERSION" --argjson seatCap "$SEAT_CAP" \
+            '{channel: $channel, image: $image, version: $version, seatCap: $seatCap}')
+          echo "Deploying $body"
+          curl -sS --fail-with-body -X POST "https://legion.bloxity.io/v1/apps/$GAME_ID/deploy" \
+            -H "Authorization: Bearer $LEGION_DEPLOY_TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d "$body"
+
+  frontend:
+    name: Client build -> Boxity
+    needs: backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install
+        working-directory: client
+        run: npm ci
+
+      # Settings come from client/.env.production (hosting id, slug, room size).
+      - name: Build
+        working-directory: client
+        run: npm run build
+
+      - name: Zip the build
+        run: cd client/dist && zip -qr "$GITHUB_WORKSPACE/build.zip" .
+
+      - name: Upload to Boxity hosting
+        env:
+          LEGION_DEPLOY_TOKEN: ${{ secrets.LEGION_DEPLOY_TOKEN }}
+          CHANNEL: ${{ needs.backend.outputs.channel }}
+          VERSION: ${{ needs.backend.outputs.version }}
+        run: |
+          curl -sS --fail-with-body -X POST \
+            "https://api.bloxity.io/v1/hosting/games/$GAME_ID/frontend?channel=$CHANNEL&version=$VERSION" \
+            -H "Authorization: Bearer $LEGION_DEPLOY_TOKEN" \
+            -H 'Content-Type: application/zip' \
+            --data-binary @build.zip

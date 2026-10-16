@@ -1,0 +1,6 @@
+{
+  "name": "jetpack-escape-shared",
+  "private": true,
+  "type": "module",
+  "description": "Game config and world generator shared by the client and the Colyseus server."
+}
