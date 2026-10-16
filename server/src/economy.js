@@ -40,7 +40,7 @@ export function newProfile(id, name) {
 
 /** Fills in fields added after a profile was first saved. */
 export function normalizeProfile(p) {
-  // The soft currency was called "gems" before Boxity's own Gems existed.
+  // Very old saves called coins "gems".
   if (p.coins === undefined && typeof p.gems === 'number') p.coins = p.gems
   delete p.gems
   const d = {

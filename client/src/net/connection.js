@@ -56,7 +56,11 @@ function nextPumpkinGoal(count) {
 const handlers = {
   welcome(m) {
     runtime.timeOffset = m.serverTime - Date.now()
-    useGame.setState({ welcome: m, moonlitStock: m.moonlitStock, hello: m.hello ? { ...m.hello, at: Date.now() } : null })
+    // A rejoin right after joining (e.g. Boxity signing the guest in) says "again":
+    // keep the first-time / welcome-back card that is still on screen.
+    const shown = getGame().hello
+    const keep = m.hello?.kind === 'again' && shown && shown.kind !== 'again'
+    useGame.setState({ welcome: m, moonlitStock: m.moonlitStock, hello: keep ? shown : m.hello ? { ...m.hello, at: Date.now() } : null })
     runtime.worldView?.applyStock(m.moonlitStock)
     runtime.local?.teleport(m.spawn, { snap: true })
   },
